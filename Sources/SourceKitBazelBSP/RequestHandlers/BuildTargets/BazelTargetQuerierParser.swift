@@ -104,6 +104,8 @@ protocol BazelTargetQuerierParser: AnyObject {
 // MARK: - Processing Cqueries
 
 final class BazelTargetQuerierParserImpl: BazelTargetQuerierParser {
+    static let passThroughRuleKinds = ["swift_library_group", "spm_minimum_os_target"]
+
     func processCquery(
         from data: Data,
         testBundleRules: [String],
@@ -131,6 +133,7 @@ final class BazelTargetQuerierParserImpl: BazelTargetQuerierParser {
         var allTopLevelLabels = [(String, TopLevelRuleType)]()
         var allAliases = [BlazeQuery_Target]()
         var allFilegroups = [BlazeQuery_Target]()
+        var allPassThroughs = [BlazeQuery_Target]()
         var allTestBundles: [BlazeQuery_Target] = []
         var unfilteredDependencyTargets = [Analysis_ConfiguredTarget]()
         var seenSourceFiles = Set<String>()
@@ -170,6 +173,8 @@ final class BazelTargetQuerierParserImpl: BazelTargetQuerierParser {
                     }
                 } else if kind == "alias" {
                     allAliases.append(target)
+                } else if Self.passThroughRuleKinds.contains(kind) {
+                    allPassThroughs.append(target)
                 } else if kind == "filegroup" {
                     allFilegroups.append(target)
                 } else if supportedTestBundleRulesSet.contains(kind) {
@@ -246,11 +251,14 @@ final class BazelTargetQuerierParserImpl: BazelTargetQuerierParser {
             guard let configuration = configIdToMnemonicMap[configuredTarget.configurationID] else {
                 throw BazelTargetQuerierParserError.missingMnemonic(configuredTarget.configurationID)
             }
-            guard configurationToTopLevelLabelsMap[configuration] != nil else {
-                continue
-            }
             let kind = configuredTarget.target.rule.ruleClass
             let label = configuredTarget.target.rule.name
+            // External targets can be wrapped in a transition (e.g. rules_swift_package_manager sets the min OS),
+            // so their configuration differs from the top-level one. Keep them; the orphan filter below
+            // still drops the ones not reached from a requested top-level target.
+            guard configurationToTopLevelLabelsMap[configuration] != nil || label.isExternalBazelLabel() else {
+                continue
+            }
             guard let ruleType = DependencyRuleType(rawValue: kind), supportedDependencyRuleTypesSet.contains(ruleType)
             else {
                 continue
@@ -295,6 +303,18 @@ final class BazelTargetQuerierParserImpl: BazelTargetQuerierParser {
         for target in allAliases {
             let label = target.rule.name
             let actual = target.rule.ruleInput[0]
+            aliasToLabelMap[label] = actual
+            registeredAliases.append(label)
+        }
+
+        // Treat pass-through wrapper rules (see `passThroughRuleKinds`) as aliases of their single dependency.
+        for target in allPassThroughs {
+            let label = target.rule.name
+            let deps = target.rule.attribute.first { $0.name == "deps" }?.stringListValue ?? []
+            guard let actual = deps.first ?? target.rule.ruleInput.first else {
+                logger.error("Unexpected missing dependency for pass-through rule \(label).")
+                continue
+            }
             aliasToLabelMap[label] = actual
             registeredAliases.append(label)
         }
@@ -534,14 +554,18 @@ final class BazelTargetQuerierParserImpl: BazelTargetQuerierParser {
 
         // Step 3: Map each dependency URI to its top-level parent labels
         // For each dependency, find which top-level targets have it in their transitive closure
+        let topLevelConfigs = Set(topLevelTargets.map { $0.2 })
         var bspUriToTopLevelLabelsMap: [URI: [String]] = [:]
         for (depLabel, uriAndConfigs) in depLabelToUriMap {
             let resolvedLabel = resolveAlias(label: depLabel, from: aliasToLabelMap)
             for (bspId, configMnemonic) in uriAndConfigs {
                 var parentLabels: [String] = []
                 for (topLevelLabel, _, topLevelConfig) in topLevelTargets {
-                    // Only consider top-level targets with matching config
-                    guard topLevelConfig == configMnemonic else { continue }
+                    // Only consider top-level targets with matching config, unless the dependency's
+                    // config is not a top-level one (transitioned external target).
+                    guard topLevelConfig == configMnemonic || !topLevelConfigs.contains(configMnemonic) else {
+                        continue
+                    }
                     // Check if this dep is in the top-level's transitive closure
                     guard let transitiveDeps = topLevelToTransitiveDeps[topLevelLabel] else { continue }
                     if transitiveDeps.contains(depLabel) || transitiveDeps.contains(resolvedLabel) {

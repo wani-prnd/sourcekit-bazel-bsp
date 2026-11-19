@@ -202,9 +202,27 @@ final class BazelTargetStoreImpl: BazelTargetStore, @unchecked Sendable {
     func platformBuildLabelInfo(forBSPURI uri: URI) throws -> BazelTargetPlatformInfo {
         let bazelLabel = try bazelTargetLabel(forBSPURI: uri)
         let configMnemonic = try parentConfig(forBSPURI: uri)
-        let config = try topLevelConfigInfo(forConfigMnemonic: configMnemonic)
         // Use preferredTopLevelLabel to get the best parent (app over extension/test)
         let parentToUse = try preferredTopLevelLabel(forBSPURI: uri)
+        let config: BazelTargetConfigurationInfo
+        if let ownInfo = aqueryResult?.topLevelConfigMnemonicToInfoMap[configMnemonic] {
+            config = ownInfo
+        } else {
+            // Transitioned external target: its configuration is not a top-level one. Borrow the platform
+            // from the parent top-level target, but keep the target's own configuration name for the aquery lookup.
+            guard let parentConfigMnemonic = cqueryResult?.topLevelTargets.first(where: { $0.0 == parentToUse })?.2
+            else {
+                throw BazelTargetStoreError.unableToMapBSPURIToParentConfig(uri)
+            }
+            let parentInfo = try topLevelConfigInfo(forConfigMnemonic: parentConfigMnemonic)
+            config = BazelTargetConfigurationInfo(
+                configurationName: configMnemonic,
+                minimumOsVersion: parentInfo.minimumOsVersion,
+                platform: parentInfo.platform,
+                cpuArch: parentInfo.cpuArch,
+                sdkName: parentInfo.sdkName
+            )
+        }
         return BazelTargetPlatformInfo(
             label: bazelLabel,
             topLevelParentLabel: parentToUse,

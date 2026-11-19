@@ -84,6 +84,8 @@ final class BazelTargetQuerier {
         // This is because --output proto doesn't follow the aliases automatically,
         // so we need this info to do it ourselves.
         dependencyKindsFilter.append("alias")
+        // rules_swift_package_manager wraps each SPM library in these pass-through rules, which we resolve like aliases.
+        dependencyKindsFilter.append(contentsOf: BazelTargetQuerierParserImpl.passThroughRuleKinds)
         // We need to also use the `filegroup` kind to properly resolve sources
         // that are provided through filegroup rules.
         dependencyKindsFilter.append("filegroup")
