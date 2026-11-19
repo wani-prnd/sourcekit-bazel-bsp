@@ -389,10 +389,16 @@ extension BazelTargetCompilerArgsExtractor {
                 continue
             }
 
-            // Transform external/ paths
-            // FIXME: How to be sure this is actually the placeholder and not an actual "external/"" folder?
-            if arg.contains("external/") {
-                let transformedArg = arg.replacingOccurrences(of: "external/", with: outputBase + "/external/")
+            // Transform external/ paths. Only a whole leading path component counts (start of the arg, after `=`,
+            // `./`, or a -I/-F/-iquote/-isystem prefix), so workspace paths like `lib/_external/` are left alone.
+            let externalPattern = #"(^|=|^-I|^-F|^-iquote|^-isystem)(\./)?external/"#
+            if arg.range(of: externalPattern, options: .regularExpression) != nil {
+                let replacement = "$1" + NSRegularExpression.escapedTemplate(for: outputBase + "/external/")
+                let transformedArg = arg.replacingOccurrences(
+                    of: externalPattern,
+                    with: replacement,
+                    options: .regularExpression
+                )
                 compilerArguments.append(transformedArg)
                 index += 1
                 continue

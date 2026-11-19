@@ -91,15 +91,24 @@ enum IndexOutputPathBuilder {
         executionRoot: String
     ) -> String? {
         let parsed = parseRuleName(ruleName)
-        guard let packagePath = parsed.packagePath, let targetName = parsed.targetName else {
+        let isExternal = parsed.externalRepoName != nil
+        // Targets in the root package of an external repo ("@repo//:target") have no package path.
+        guard let targetName = parsed.targetName, parsed.packagePath != nil || isExternal else {
             return nil
         }
+        let packagePath = parsed.packagePath ?? ""
+        let packageDirectory = packagePath.isEmpty ? "" : packagePath + "/"
 
         // Compute source path relative to package directory
-        let packagePrefix = rootUri + "/" + packagePath + "/"
         let srcRelativeToPackage: String
-        if filePath.hasPrefix(packagePrefix) {
-            srcRelativeToPackage = String(filePath.dropFirst(packagePrefix.count))
+        if let repoName = parsed.externalRepoName,
+            let repoRange = filePath.range(of: "/external/\(repoName)/"),
+            filePath[repoRange.upperBound...].hasPrefix(packageDirectory)
+        {
+            // External files live under <outputBase>/external/<repo>/<package>/.
+            srcRelativeToPackage = String(filePath[repoRange.upperBound...].dropFirst(packageDirectory.count))
+        } else if filePath.hasPrefix(rootUri + "/" + packageDirectory) {
+            srcRelativeToPackage = String(filePath.dropFirst(rootUri.count + 1 + packageDirectory.count))
         } else {
             // Fallback: just use the filename
             srcRelativeToPackage = (filePath as NSString).lastPathComponent
@@ -107,13 +116,16 @@ enum IndexOutputPathBuilder {
 
         // External repos have outputs under bin/external/<repo_name>/
         let externalPrefix = parsed.externalRepoName.map { "external/\($0)/" } ?? ""
+        // The rules_swift worker compiles non-WMO modules under bin/_swift_incremental/. We only observed this
+        // for external targets (SPM libraries); local app targets are written directly under bin/.
+        let incrementalPrefix = isExternal ? "_swift_incremental/" : ""
 
         switch language {
         case .swift:
-            // Swift: ./bazel-out/<config>/bin/[external/<repo>/]<package>/<target>_objs/<srcRelative>.swift.o
+            // Swift: ./bazel-out/<config>/bin/[_swift_incremental/][external/<repo>/][<package>/]<target>_objs/<srcRelative>.swift.o
             // The ./ prefix comes from -file-prefix-map $PWD=. applied by the compiler.
             return
-                "./bazel-out/\(configMnemonic)/bin/\(externalPrefix)\(packagePath)/\(targetName)_objs/\(srcRelativeToPackage).o"
+                "./bazel-out/\(configMnemonic)/bin/\(incrementalPrefix)\(externalPrefix)\(packageDirectory)\(targetName)_objs/\(srcRelativeToPackage).o"
         case .c, .cpp, .objective_c, .objective_cpp:
             // C/ObjC: <executionRoot>/bazel-out/<config>/bin/[external/<repo>/]<package>/_objs/<target>[/arc]/<file>.o
             // Clang does NOT apply -file-prefix-map to the output path stored in index units,
@@ -122,7 +134,7 @@ enum IndexOutputPathBuilder {
             let fileName = (filePath as NSString).deletingPathExtension.components(separatedBy: "/").last ?? ""
             let arcSubdir = (ruleType == .objcLibrary) ? "/arc" : ""
             return
-                "\(executionRoot)/bazel-out/\(configMnemonic)/bin/\(externalPrefix)\(packagePath)/_objs/\(targetName)\(arcSubdir)/\(fileName).o"
+                "\(executionRoot)/bazel-out/\(configMnemonic)/bin/\(externalPrefix)\(packageDirectory)_objs/\(targetName)\(arcSubdir)/\(fileName).o"
         default:
             return nil
         }

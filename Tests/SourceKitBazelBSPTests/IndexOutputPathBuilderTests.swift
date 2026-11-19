@@ -181,7 +181,27 @@ struct IndexOutputPathBuilderBuildTests {
 
         #expect(
             result
-                == "./bazel-out/\(configMnemonic)/bin/external/some_external_repo/Sources/ExternalLib/ExternalLib_objs/File.swift.o"
+                == "./bazel-out/\(configMnemonic)/bin/_swift_incremental/external/some_external_repo/Sources/ExternalLib/ExternalLib_objs/File.swift.o"
+        )
+    }
+
+    @Test
+    func swiftSourceInExternalRepoRootPackage() {
+        let config = "ios_sim_arm64-dbg-ios-sim_arm64-min12.0-ST-3b7b460e3259"
+        let result = IndexOutputPathBuilder.build(
+            language: .swift,
+            ruleType: .swiftLibrary,
+            ruleName: "@@rules_swift_package_manager++swift_deps+swiftpkg_alamofire//:Alamofire.rspm.__impl",
+            configMnemonic: config,
+            filePath:
+                "/private/var/tmp/_bazel_user/hash/sourcekit-bazel-bsp/external/rules_swift_package_manager++swift_deps+swiftpkg_alamofire/Source/Core/Session.swift",
+            rootUri: rootUri,
+            executionRoot: executionRoot
+        )
+
+        #expect(
+            result
+                == "./bazel-out/\(config)/bin/_swift_incremental/external/rules_swift_package_manager++swift_deps+swiftpkg_alamofire/Alamofire.rspm.__impl_objs/Source/Core/Session.swift.o"
         )
     }
 
